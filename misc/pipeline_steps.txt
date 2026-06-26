@@ -1,0 +1,264 @@
+The Drew Baderson Story Moment — Pipeline Steps
+================================================
+
+This document describes every step of the pipeline in detail, including sub-steps,
+decision points, and what gets cached or skipped on re-runs.
+
+
+BEFORE RUNNING
+--------------
+- All story folders live in a stories/ subfolder (e.g. stories/20260406_compliance/)
+- Each story folder should contain the original .docx script for transcript correction
+- Run from the project root folder using Anaconda Prompt
+- Phase 1 (transcription through video): python main.py
+- Phase 2 (transcript correction + YouTube): python upload_to_youtube.py
+- Individual modules can be run standalone (see bottom of each .py file)
+
+
+STEP 0 — STARTUP (main.py)
+---------------------------
+1. Display current model versions (gpt-5.5 / gpt-image-1.5) and ask to confirm or exit
+2. Prompt for word directory (e.g. "20260406_compliance")
+3. Create stories/ subfolder if it doesn't exist
+4. Collect all configuration upfront:
+   - Show name (default: "The Drew Baderson Story Moment")
+   - Intro anchor phrase (default: "this is what I wrote")
+   - End anchor phrase (default: "the end")
+   - Episode title
+   - End card top/bottom text
+   - Credits top/bottom text
+   - Notification email (default: andrew.callaghan.connor@gmail.com, or 'none' to skip)
+5. Initialize cost tracker and activity log
+6. Display pricing status (warn if litellm pricing may be outdated)
+
+
+STEP 1 — TRANSCRIPTION (transcribe.py)
+---------------------------------------
+SKIP IF: both .txt and .srt already exist in the story folder
+
+1. Add ffmpeg to PATH if not already present
+2. Compress .wav to .mp3 to stay within Whisper's file size limit
+3. Send .mp3 to Whisper API
+4. Write plain text transcript to [word_directory].txt
+5. Write SRT subtitle file to [word_directory].srt
+6. Log cost
+
+
+STEP 2 — STYLE SELECTION (style_selector.py)
+---------------------------------------------
+IF [word_directory]_style.txt EXISTS:
+  - Show existing style with three options:
+    - Press Enter to accept
+    - Type 'r' for a random pick
+    - Type a style name to use it
+  - If changed: update styles.csv and overwrite _style.txt
+  - If unchanged: proceed without updating styles.csv
+
+IF [word_directory]_style.txt DOES NOT EXIST:
+  - Pick randomly from styles.csv (used=0 only)
+  - Show selection with same three options
+  - Keep offering until confirmed
+  - Increment usage count and record directory in styles.csv
+  - Write [word_directory]_style.txt
+
+
+STEP 3 — IMAGE GENERATION (image_generator.py)
+------------------------------------------------
+
+3A — BEAT + CHARACTER + STORY BIBLE GENERATION
+SKIP IF: [word_directory]_beats.json exists
+
+  1. Read SRT and search for intro anchor phrase → exact intro end time
+     (falls back to 30s estimate if not found)
+  2. Calculate target beat count: (total_duration - intro_end) / 10 + 1
+  3. Send full transcript to GPT-5.5 to produce:
+
+     CHARACTER LIST:
+       - Defining visual traits only (no situational props)
+       - Racial/ethnic diversity required; varied body types and ages
+       - "Avoid defaulting to a cast of young, slim adults"
+       - Concrete diversity examples: heavyset, slight, athletic, elderly,
+         middle-aged, young adults, tall, short
+       - Villainous characters must not be depicted as people of color
+       - Character name omitted from sheet prompt to avoid moderation false positives
+
+     STORY BIBLE:
+       - All settings with visual constraints
+       - Key objects and their rules
+       - Key facts (relationships, established truths)
+       - Title card explicitly excluded from settings
+
+     BEAT PROMPTS:
+       - Beat 1: GPT-5.5 identifies 2-3 dominant visual themes from transcript
+         first, then writes title card incorporating those themes
+       - ALL beats: MUST stop at "The End" — no invented post-story content
+       - Each prompt must begin with style instruction as first sentence
+       - Each prompt (beat 2+) includes mandatory scene header:
+           LOCATION: [setting]
+           CHARACTERS PRESENT: [names with description hints, e.g. "Mitzi (A small lizard...)"]
+           CHARACTERS NOT PRESENT: [all other characters]
+
+3B — VERIFICATION PASS 1: STORY BIBLE
+  - GPT-5.5 fact-checks all constraints against transcript
+  - Corrects overly absolute constraints
+
+3C — VERIFICATION PASS 2: BEAT PROMPTS
+  - GPT-5.5 checks every beat prompt for continuity errors
+  - Saves verified data to [word_directory]_beats.json
+
+3D — STYLE REFERENCE IMAGE
+SKIP IF: references/style_reference.png exists
+  - Generated using word of the day as seed
+
+3E — CHARACTER SHEET REFERENCES
+SKIP PER CHARACTER IF: references/character_[name].png exists
+  - Prompt uses description only (name omitted)
+  - Style reference as anchor
+  - On moderation block: rewrite targeting specific violation type, retry once
+  - On connection error: retry with 10s delay
+
+3F — LOCATION REFERENCE IMAGES
+SKIP PER LOCATION IF: references/location_[name].png exists
+  - For settings appearing in more than one beat
+  - Style reference as anchor; moderation retry
+
+3G — REFERENCE IMAGE REVIEW LOOP
+  - Check for any missing character or location references
+  - Prompt to retry or skip; loop until resolved
+  - Full moderation/connection retry logic applies
+
+3H — STORY IMAGES (beats 1 through N)
+SKIP PER IMAGE IF: images/image_NNN.png exists
+  - Beats whose peak falls at or after end timestamp are skipped
+    (only on fresh timing generation — cached timing is trusted)
+  - Build enriched prompt:
+      [Style requirement] + [Beat prompt] + [Bible context] + [Scene header with char hints]
+  - Reference image order: style ref → location → character sheets → previous image last
+  - Beat 1: generate endpoint, no reference images, no bible context
+  - On moderation block: rewrite targeting specific violation, retry once
+  - On connection error: retry up to 3 times with 10s delay
+
+3I — STORY IMAGE REVIEW LOOP
+  - Check for any missing story images
+  - Prompt to retry or skip; loop until resolved
+
+3J — STORY THEMES EXTRACTION
+SKIP IF: [word_directory]_themes.txt exists
+  - GPT-5.5 produces one-sentence visual theme summary from transcript
+  - Saved to [word_directory]_themes.txt
+  - Skip entirely if both end slides already exist
+
+3K — END CARD + CREDITS SLIDES
+SKIP PER SLIDE IF: images/the_end.png / images/credits.png exists
+  - Both slides: style requirement + story themes + image_001 + style_reference as anchors
+  - The End slide: "The End" prominently at top (explicit: two separate words), show name below
+  - Credits slide: credits text; explicit instruction not to default to plain white background
+
+
+STEP 4 — VIDEO ASSEMBLY (assemble_video.py)
+--------------------------------------------
+
+CHECK: If .mp4 already exists, prompt to overwrite or cancel — BEFORE doing any work
+
+4A — TIMESTAMP MATCHING
+SKIP IF: [word_directory]_timing.json exists
+  - GPT-5.5 matches beats to SRT segments
+  - Save to [word_directory]_timing.json
+
+4B — TIMING CALCULATION
+  - Find intro anchor phrase timestamp in SRT
+  - Find end anchor phrase in SRT, searching only after the last beat's start time
+    (prevents false match on "the end" appearing in story dialogue)
+  - Fallback: last non-duplicate, non-URL segment
+  - Filter beat timings to only beats whose images exist on disk
+  - Compute peak times:
+      Beat 1: peaks at intro anchor timestamp
+      Beats 2+: peaks at midpoint between this beat's start and next beat's start
+      Last beat: peaks at midpoint between its start and the_end_time
+  - Skip beats whose peak >= the_end_time (only when timing freshly generated)
+  - If _timing.json was cached: trust it entirely, no beat skipping
+
+4C — CLIP BUILDING + EXPORT
+  - Crossfades with 3-second static hold at peak
+  - Beat 1: fade in from black
+  - The End card: 1-second crossfade in, peaking 1s after the_end_time
+  - Credits: fade to black over final 5 seconds
+  - Export as MP4 (H.264/AAC)
+  - Save to [word_directory].mp4
+
+
+PIPELINE PAUSES — review video before continuing
+
+
+STEP 5 — TRANSCRIPT CORRECTION (correct_transcript.py)
+--------------------------------------------------------
+First step when upload_to_youtube.py is run. Can also be run standalone.
+
+SKIP IF: [word_directory].docx not found (warning logged, continues)
+
+1. Read [word_directory].docx to extract script text
+2. Read [word_directory].srt and [word_directory].txt
+3. Send both to GPT-5.5 to identify misspellings of:
+   - Character names
+   - Place names
+   - Made-up or unusual words
+   - Specific invented items
+   NOT flagged: minor word choice differences, paraphrasing, added/dropped filler words
+4. Show proposed corrections:
+   - Press Enter to apply all
+   - Type 'r' to review individually (Enter=yes, n=no per correction)
+   - Type 'skip' to skip entirely
+5. Apply confirmed corrections to both .srt and .txt files
+
+
+STEP 6 — YOUTUBE UPLOAD (upload_to_youtube.py)
+-----------------------------------------------
+Run separately after reviewing the assembled video.
+Transcript correction (Step 5) runs automatically first.
+
+PROMPTS:
+  - Video title (default: show name + episode word)
+  - Category (default: Film & Animation)
+  - Privacy status (default: Public)
+  - Made for kids (default: No)
+  - Playlist ID (default: PLl2SOtnm4g0EoRo7rUUh8NfqKdr_wRz5L, or 'none' to skip)
+  - Caption upload (default: yes, type 'skip' to skip)
+  - Notification email
+
+IF [word_directory]_youtube.json EXISTS:
+  - Skip video upload
+  - Proceed to thumbnail, playlist, and captions only
+
+STEPS:
+  1. Transcript correction (Step 5)
+  2. Generate description (teaser, no spoilers, human/AI disclosure) and tags
+     SKIP IF: [word_directory]_metadata.json exists
+  3. Authenticate with YouTube (OAuth — client_secrets.json / youtube_token.json)
+  4. Upload video
+  5. Save [word_directory]_youtube.json IMMEDIATELY after upload
+  6. Upload thumbnail (image_001.png → 1280x720 JPEG, RGB converted)
+  7. Add to playlist
+  8. Upload captions (.srt via captions.insert)
+
+POST-UPLOAD REMINDER:
+  - Set comment settings manually in YouTube Studio
+    (comment settings cannot be controlled via the YouTube API)
+
+
+NOTIFICATIONS (all modules)
+----------------------------
+- Notification email address collected upfront in every module
+- At run completion: chime plays + email sent via Gmail API
+  (gmail_client_secret.json / gmail_token.json — separate from YouTube credentials)
+- main.py sends one notification at the very end only
+- Email includes: status, duration, cost, full activity log
+- Type 'none' at prompt to skip notification
+
+
+COST TRACKING (all steps)
+--------------------------
+- Every API call writes cost immediately to pipeline_cost_log.json
+- Text costs via litellm; image costs via actual API usage tokens
+- OpenAI account usage queried before/after run for comparison
+- Run summary (start, end, duration, total cost) printed to console
+- All file writes wrapped in safe_write() — PermissionError prompts to close file and retry

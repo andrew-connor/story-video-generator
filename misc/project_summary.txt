@@ -1,0 +1,80 @@
+The Drew Baderson Story Moment — Project Summary
+=================================================
+
+The Drew Baderson Story Moment is a show where the host, Drew Baderson, has exactly one hour to write and record a short story inspired by a word chosen at random from the dictionary. The result is a monologue — a single audio recording of Drew reading the story he wrote. The goal of this pipeline is to take that audio recording and automatically produce a fully illustrated animated video, complete with AI-generated images for every beat of the story, synchronized to the audio, and uploaded to YouTube.
+
+
+THE BASIC IDEA
+--------------
+Every episode starts with a WAV audio file. The pipeline transcribes it, selects an illustration style, generates all the images, assembles them into a video synced to Drew's voice, and then hands off to YouTube. All story folders live in a stories/ subfolder alongside the code files. The whole thing is designed to run largely unattended — all configuration questions are asked upfront, and the pipeline works through each step on its own.
+
+The pipeline is split into two phases. The first phase — transcription, style selection, image generation, and video assembly — is run via main.py and ends with a video file ready for review. The second phase — transcript correction and YouTube upload — is run separately after Drew has reviewed the video. Each module can also be run as a standalone script.
+
+
+TRANSCRIPTION
+-------------
+The audio file gets compressed from WAV to MP3 to stay under OpenAI's file size limits, then sent to the Whisper API. Whisper produces a plain text transcript and an SRT subtitle file with precise timestamps for every segment of speech.
+
+A recurring issue is Whisper adding hallucinated content at the end of recordings — sometimes duplicate segments, sometimes outright fabrications like YouTube URLs. These are handled in video assembly by searching for the end anchor phrase directly in the SRT and ignoring any segment that looks like a URL.
+
+
+STYLE SELECTION
+---------------
+Each episode uses a different illustration style, chosen from a curated list in a spreadsheet. The system picks randomly from unused styles and presents the selection with three options: accept it, generate a new random pick, or type a style name directly. The same options are shown whether or not the story already has a saved style. Usage counts and episode history are tracked so no style repeats until all have been used at least once.
+
+
+IMAGE GENERATION
+----------------
+This is by far the most complex part of the pipeline.
+
+The pipeline starts by reading the SRT file and finding the exact timestamp where Drew says "this is what I wrote" — the phrase that ends the intro and starts the story. The beat count is calculated from that precise end point rather than a fixed estimate.
+
+The full transcript is sent to GPT-5.5, which does three things at once. First, it creates a character list with detailed visual descriptions. The descriptions include only defining traits, not situational props. Casting guidelines require racial and ethnic diversity, varied body types and ages, and explicitly instruct the model to avoid defaulting to a cast of young, slim adults. Villainous or morally compromised characters must not be depicted as people of color.
+
+Second, GPT builds a story bible covering every setting, object, spatial constraint, and key fact that appears more than once or is established early.
+
+Third, GPT writes an image generation prompt for every beat. Before writing the title card prompt for beat 1, it reads the full transcript and identifies two or three dominant visual themes — the mood, setting, and key motifs of the story. Those themes inform the atmosphere and color palette of the title card. Beat generation is explicitly instructed to stop at "The End" and never generate thematic summary or epilogue beats beyond the actual transcript content. An early version of the pipeline produced several invented reflective beats after "The End," so this instruction was added to prevent that.
+
+Two verification passes run after generation: the first checks every story bible constraint against the transcript; the second checks every beat prompt for continuity errors.
+
+The pipeline then generates reference images: a style reference seeded with the word of the day, character sheets for every major character (the character name is omitted from the prompt to avoid false moderation flags), and location references for recurring settings. Before story image generation begins, a review loop prompts for any missing references. Story images are then generated with a high-priority style requirement, story bible context, and character description hints in the scene header — for example, "Mitzi (A small lizard with mottled green-brown scales)" — so the model can't default to a more familiar animal type. After generation, a second review loop prompts for any missing beat images.
+
+Story themes are extracted and cached in a _themes.txt file, then injected into both the end card and credits slide prompts to tie them to the story world.
+
+Style drift has been an ongoing challenge. We addressed this by building a lookup table of rich style descriptions, prepending a high-priority style requirement to every prompt, and instructing GPT-5.5 to put the style instruction as the very first sentence of every beat prompt.
+
+
+VIDEO ASSEMBLY
+--------------
+GPT-5.5 matches beats to SRT timestamps, cached in a timing file. The timing filter uses only beats whose images exist on disk, so extraneous timing entries never stretch the last real beat. When a cached timing file is used, the beat skip logic is bypassed entirely — the timing file is trusted as validated.
+
+The end timestamp is found by searching the SRT for the end anchor phrase after the last known beat, preventing false matches on dialogue that contains the words "the end." The fallback skips URL-like hallucinated segments.
+
+Before compositing begins, the pipeline checks whether a video already exists and prompts before overwriting.
+
+
+TRANSCRIPT CORRECTION
+---------------------
+Because Whisper sometimes misspells proper nouns, character names, and made-up words, the first step of the YouTube upload phase is a transcript correction pass. The pipeline reads the original written script (a Word document in the story folder), compares it against the SRT transcript, and asks GPT-5.5 to identify misspellings of specific named things — ignoring minor word choice variations or paraphrasing. Proposed corrections are shown for confirmation before anything is changed, with options to apply all, review individually, or skip. Confirmed corrections are applied to both the SRT and the plain text transcript. This step can also be run as a standalone script.
+
+
+YOUTUBE UPLOAD
+--------------
+After transcript correction, the upload script generates a teaser-style description and tags, uploads the video, sets the thumbnail, adds it to the default playlist, and uploads the SRT as captions. The upload record is saved immediately after the video upload succeeds, so subsequent runs detect the existing upload and skip straight to any remaining steps.
+
+Comment settings cannot be controlled via the YouTube API and must be set manually in YouTube Studio after each upload.
+
+
+NOTIFICATIONS
+-------------
+At the end of every pipeline run — whether main.py or a standalone module — a chime plays and a notification email is sent to the configured address. The email includes the run status, duration, cost, and the full activity log. Gmail and YouTube use separate OAuth credentials so token expiry for one doesn't affect the other.
+
+
+COST TRACKING AND LOGGING
+--------------------------
+Every API call writes its cost immediately to a running log file. A run summary showing start time, end time, and duration is printed to the console at the end of every run. All file writes are wrapped in a safe write helper that catches permission errors and prompts to close the file and retry.
+
+
+THE MODELS
+----------
+The pipeline started using GPT-4o for text and gpt-image-1 for images, then upgraded to GPT-5.4 and gpt-image-1.5, and is now on GPT-5.5 for text. GPT-5.5 does not support the temperature parameter — all GPT calls use the default. The pipeline shows current model versions at startup and asks for confirmation before proceeding. gpt-image-2 is expected to become available via API in early May 2026 and is worth evaluating for improved text rendering and style consistency.

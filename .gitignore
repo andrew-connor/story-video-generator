@@ -1,0 +1,35 @@
+# Secrets — never commit
+.env
+client_secrets.json
+gmail_client_secret.json
+gmail_token.json
+youtube_token.json
+*token*.json
+*secret*.json
+
+# Python
+__pycache__/
+*.py[cod]
+
+# Jupyter checkpoint cruft
+.ipynb_checkpoints/
+
+# Generated episode output (large media, not source)
+stories/
+
+# Old versions / scratch
+old/
+
+# Runtime logs and cost data
+pipeline_activity.json
+pipeline_activity.log
+pipeline_cost_log.json
+backup_status.txt
+
+# Production audio assets (kept local; not used directly by the pipeline code)
+intro_outro_audio_files/
+
+# OS
+desktop.ini
+.DS_Store
+Thumbs.db
